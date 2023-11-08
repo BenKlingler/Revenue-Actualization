@@ -1,0 +1,416 @@
+Sub ExecuteInSequence()
+
+    ' Call the RowInsertandForecastExtension macro first
+    Call RowInsertandForecastExtension
+
+    ' Then call the ActualizeRevenueSummary
+    Call ActualizeRevenueSummary
+
+     Call RunAllMacros
+     
+End Sub
+Function IsMonthReadyToBeActualized(ws As Worksheet) As Boolean
+    Dim firstDateCol As Long
+    Dim firstDateValue As Variant
+
+    ' Find the first column with the date format "mmm-yy"
+    For firstDateCol = 1 To ws.Cells(1, ws.Columns.count).End(xlToLeft).Column
+        If ws.Cells(1, firstDateCol).NumberFormat = "mmm-yy" Then
+            firstDateValue = ws.Cells(1, firstDateCol).Value
+            If IsDate(firstDateValue) Then ' Check if it's a valid date
+                ' If the month of the found date column has already passed, return True
+                If Month(firstDateValue) < Month(Date) And Year(firstDateValue) <= Year(Date) Then
+                    IsMonthReadyToBeActualized = True
+                    Exit Function
+                ElseIf Year(firstDateValue) < Year(Date) Then ' Handle case where the year of the first date column is less than current year
+                    IsMonthReadyToBeActualized = True
+                    Exit Function
+                Else
+                    IsMonthReadyToBeActualized = False
+                    Exit Function
+                End If
+            End If
+        End If
+    Next firstDateCol
+    ' Default to False if no valid date was found
+    IsMonthReadyToBeActualized = False
+End Function
+Sub RowInsertandForecastExtension()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Revenue Summary")
+
+    If Not IsMonthReadyToBeActualized(ws) Then
+        MsgBox "The month isn't ready to be actualized or a new month to be added!", vbCritical
+        Exit Sub
+    End If
+
+ Debug.Print "Starting RowInsertandForecastExtension"
+ 
+    Dim lastCol As Long
+    Dim i As Long
+    Dim lastYear As Integer
+    Dim lastMonth As Integer
+    Dim nextYear As Integer
+    Dim nextMonth As Integer
+    Dim headerRows() As Long
+    Dim cell As Range
+    Dim idx As Long
+    
+    ' Set the reference to the worksheet
+    Set ws = ThisWorkbook.Sheets("Revenue Summary")
+
+    ' Determine the last column with content in the first row
+    lastCol = ws.Cells(1, ws.Columns.count).End(xlToLeft).Column
+
+    ' Find the last date formatted cell from the right
+    For i = lastCol To 1 Step -1
+        If ws.Cells(1, i).NumberFormat = "mmm-yy" Then
+            ' Extract only year and month
+            lastMonth = Month(ws.Cells(1, i).Value)
+            lastYear = Year(ws.Cells(1, i).Value)
+            Exit For
+        End If
+    Next i
+
+    ' Calculate the next month and year
+    If lastMonth = 12 Then
+        nextMonth = 1
+        nextYear = lastYear + 1
+    Else
+        nextMonth = lastMonth + 1
+        nextYear = lastYear
+    End If
+
+    ' Insert the new column after the last date column and set its value
+    ws.Cells(1, i + 1).EntireColumn.Insert
+    ws.Cells(1, i + 1).Value = DateSerial(nextYear, nextMonth, 1)
+
+    ' Then format it to the desired format
+    ws.Cells(1, i + 1).NumberFormat = "mmm-yy"
+
+    ' Find rows starting with "PM Only"
+    ReDim headerRows(0 To ws.Rows.count - 1) 'worst-case scenario size
+
+    For Each cell In ws.Range("A1:A" & ws.Cells(ws.Rows.count, 1).End(xlUp).Row)
+        If cell.Value = "PM Only" Then
+            headerRows(idx) = cell.Row
+            idx = idx + 1
+        End If
+    Next cell
+
+    ReDim Preserve headerRows(0 To idx - 1) 'resize to the actual size
+
+    ' Insert the same header in located rows
+    For idx = LBound(headerRows) To UBound(headerRows)
+        ws.Cells(headerRows(idx), i + 1).Value = ws.Cells(1, i + 1).Value
+        ws.Cells(headerRows(idx), i + 1).NumberFormat = "mmm-yy"
+    Next idx
+Debug.Print "Ending RowInsertandForecastExtension"
+  
+End Sub
+Sub ActualizeRevenueSummary()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Revenue Summary")
+
+    If Not IsMonthReadyToBeActualized(ws) Then
+        MsgBox "The month isn't ready to be actualized!", vbCritical
+        Exit Sub
+    End If
+
+Debug.Print "Starting ActualizeRevenueSummary"
+
+    Set ws = ThisWorkbook.Sheets("Revenue Summary")
+    
+    Dim actualizedCol As Range, prevMonthCol As Range, contractCol As Range, lastDateCol As Range
+    Dim prevMonthName As String
+    Dim i As Long, lastRow As Long, actualizedValue As Variant, contractValue As Double
+    Dim diff As Double
+
+    ' Getting the current month's previous month
+    prevMonthName = Format(DateAdd("m", -1, Date), "mmm-yy")
+    
+    ' Find the necessary columns
+    Set actualizedCol = ws.Rows(1).Find("Actualized")
+    Set prevMonthCol = ws.Rows(1).Find(prevMonthName)
+    Set contractCol = ws.Rows(1).Find("CONTRACT $")
+    Set lastDateCol = ws.Cells(1, actualizedCol.Column).End(xlToLeft)
+    
+    ' Debugging part
+    If actualizedCol Is Nothing Then
+        MsgBox "Actualized column was not found!", vbCritical
+        Exit Sub
+    End If
+    If prevMonthCol Is Nothing Then
+        MsgBox prevMonthName & " column was not found!", vbCritical
+        Exit Sub
+    End If
+    If contractCol Is Nothing Then
+        MsgBox "CONTRACT $ column was not found!", vbCritical
+        Exit Sub
+    End If
+    
+    ' Process each row
+    lastRow = ws.Cells(ws.Rows.count, contractCol.Column).End(xlUp).Row
+    For i = 2 To lastRow
+        If IsEmpty(ws.Cells(i, prevMonthCol.Column).Value) Then
+            ' If the month being actualized is empty, skip the entire row
+            GoTo NextRow
+        End If
+        
+        On Error Resume Next
+        actualizedValue = ws.Cells(i, actualizedCol.Column).Value
+        On Error GoTo 0
+
+        If IsNumeric(actualizedValue) And actualizedValue <> "" Then
+            ' Get the difference between forecasted and actualized
+            diff = ws.Cells(i, prevMonthCol.Column).Value - actualizedValue
+            
+            ' Adjust the contract value
+            contractValue = ws.Cells(i, contractCol.Column).Value + diff
+            ws.Cells(i, contractCol.Column).Value = contractValue
+
+            ' Distribute the new contract value over the remaining months (excluding actualized month)
+            Dim monthsLeft As Long
+            monthsLeft = (lastDateCol.Column - actualizedCol.Column) - 1
+            If monthsLeft > 0 Then
+                Dim monthlyValue As Double
+                monthlyValue = contractValue / monthsLeft
+                Dim j As Long
+                For j = actualizedCol.Column + 1 To lastDateCol.Column
+                    ws.Cells(i, j).Value = monthlyValue
+                Next j
+            End If
+        End If
+
+        ' Clear the value in the actualized column for the current row
+        ws.Cells(i, actualizedCol.Column).Value = ""
+
+NextRow:
+    Next i
+
+    ' Find the column with the "PM Only" header and copy the "Actualized" header into it
+    Dim cell As Range
+    For Each cell In ws.Range("A1:A" & lastRow)
+        If cell.Value = "PM Only" Then
+            cell.Offset(0, actualizedCol.Column - 1).Value = "Actualized"
+        End If
+    Next cell
+
+    ' Delete the previous month's column
+    prevMonthCol.EntireColumn.Delete
+
+Debug.Print "Ending ActualizeRevenueSummary"
+   
+End Sub
+Sub RunAllMacros()
+
+    ' Call the ExtendForecastValues macro
+    Call ExtendForecastValues
+
+    ' Call the UpdateTotal2025 macro
+    Call UpdateTotal2025
+
+    ' Call the UpdateRemainingContractAmount macro
+    Call UpdateRemainingContractAmount
+
+End Sub
+Sub ExtendForecastValues()
+
+Debug.Print "Starting ExtendForecastValues"
+
+Dim ws As Worksheet
+Dim lastCol As Long, startDateCol As Long, endDateCol As Long, lastDateCol As Long
+Dim i As Long, lastRow As Long
+Dim endDate As Date, newDate As Date
+
+' Set the reference to the worksheet
+Set ws = ThisWorkbook.Sheets("Revenue Summary")
+
+' Determine the last column with content in the first row
+lastCol = ws.Cells(1, ws.Columns.count).End(xlToLeft).Column
+
+' Determine the last date column header
+For lastDateCol = lastCol To 1 Step -1
+    If IsDate(ws.Cells(1, lastDateCol).Value) Then
+        Exit For
+    End If
+Next lastDateCol
+
+' Assign the new date
+On Error Resume Next
+newDate = ws.Cells(1, lastDateCol).Value
+On Error GoTo 0
+
+' Find the START DATE and END DATE columns
+startDateCol = ws.Rows(1).Find("START DATE").Column
+endDateCol = ws.Rows(1).Find("END DATE").Column
+
+' Process each row
+lastRow = ws.Cells(ws.Rows.count, startDateCol).End(xlUp).Row
+For i = 2 To lastRow
+
+    ' Exit loop if "Summary" is found in the row
+    If Not IsError(Application.Match("Summary", ws.Rows(i), 0)) Then
+        Exit For
+    End If
+
+    ' Skip row if column H is empty
+    If Trim(ws.Cells(i, 8).Value) = "" Then
+        GoTo NextIteration
+    End If
+
+    ' Skip if no end date or if it's not a valid date
+    If Not IsDate(ws.Cells(i, endDateCol).Value) Then
+        GoTo NextIteration
+    Else
+        endDate = ws.Cells(i, endDateCol).Value
+    End If
+
+    ' Check if the end date extends into the new column
+    If endDate >= newDate Then
+        ' Copy value from previous month to the new month
+        ws.Cells(i, lastDateCol).Value = ws.Cells(i, lastDateCol - 1).Value
+    End If
+
+NextIteration:
+Next i
+
+Debug.Print "Ending ExtendForecastValues"
+
+Call UpdateTotal2025
+End Sub
+
+Sub UpdateTotal2025()
+
+    Debug.Print "Starting UpdateTotal2025"
+
+    Dim ws As Worksheet
+    Dim total2025Col As Long, startCol As Long, endCol As Long
+    Dim i As Long, lastRow As Long, col As Long
+
+    ' Set the reference to the worksheet
+    Set ws = ThisWorkbook.Sheets("Revenue Summary")
+
+    ' Find the column for Total 2025
+    total2025Col = ws.Rows(1).Find("Total 2025").Column
+
+    ' Identify the start and end columns for the year 2025 based on header pattern
+    startCol = 0
+    endCol = 0
+    For col = 1 To total2025Col - 1
+        If InStr(1, ws.Cells(1, col).Value, "2025") > 0 Then
+            If startCol = 0 Then startCol = col
+            endCol = col
+        End If
+    Next col
+
+    ' Ensure columns were found
+    If startCol = 0 Or endCol = 0 Then
+        MsgBox "Columns for year 2025 not found!", vbExclamation
+        Exit Sub
+    End If
+
+    ' Get the last row for calculations. Adjusted to not get the last cell in the column but the last cell in column "CONTRACT $"
+    lastRow = ws.Cells(ws.Rows.count, ws.Rows(1).Find("CONTRACT $").Column).End(xlUp).Row
+
+    ' Sum up the values for each row and populate Total 2025 column
+    For i = 2 To lastRow
+        ' Don't overwrite the header
+        If ws.Cells(i, total2025Col).Value <> "Total 2025" Then
+            ' Exit loop if "Summary" is found in the row
+            If Not IsError(Application.Match("Summary", ws.Rows(i), 0)) Then
+                Exit For
+            End If
+            ' Skip row if column H is empty
+            If Trim(ws.Cells(i, 8).Value) = "" Then
+                GoTo NextIteration
+            End If
+            ws.Cells(i, total2025Col).Formula = "=SUM(" & ws.Cells(i, startCol).Address & ":" & ws.Cells(i, endCol).Address & ")"
+        End If
+NextIteration:
+    Next i
+
+    Debug.Print "Ending UpdateTotal2025"
+
+End Sub
+
+Sub UpdateRemainingContractAmount()
+
+Debug.Print "Starting UpdateRemainingContractAmount"
+
+Dim ws As Worksheet
+Dim contractCol As Long, remainingAmountCol As Long, lastDateCol As Long
+Dim i As Long, lastRow As Long, firstDateCol As Long
+Dim prevRemainingAmount As Double
+Dim cellValue As Variant
+Dim negativeFound As Long
+
+' Set the reference to the worksheet
+Set ws = ThisWorkbook.Sheets("Revenue Summary")
+
+' Identify columns
+contractCol = ws.Rows(1).Find("CONTRACT $").Column
+remainingAmountCol = ws.Rows(1).Find("Remaining Contract Amount").Column
+
+' Identify the first date column (assuming it's the column after "Actualized")
+firstDateCol = ws.Rows(1).Find("Actualized").Column + 1
+
+' Identify the last date column
+For lastDateCol = remainingAmountCol - 1 To firstDateCol Step -1
+    If IsDate(ws.Cells(1, lastDateCol).Value) Then
+        Exit For
+    End If
+Next lastDateCol
+
+' Get the last row for calculations
+lastRow = ws.Cells(ws.Rows.count, contractCol).End(xlUp).Row
+
+' Update the formula for each row in the Remaining Contract Amount column
+For i = 2 To lastRow
+
+    ' Skip row if column H is empty or if "PM Only" is in the first column
+    If Trim(ws.Cells(i, 8).Value) = "" Or ws.Cells(i, 1).Value = "PM Only" Then
+        GoTo NextIteration
+    End If
+
+    ' Skip if the lastDateCol header format is not "mmm-yy"
+    If ws.Cells(1, lastDateCol).NumberFormat <> "mmm-yy" Then
+        GoTo NextIteration
+    End If
+
+    ' Remember the original value before updating the formula
+    If IsNumeric(ws.Cells(i, remainingAmountCol).Value) Then
+        prevRemainingAmount = ws.Cells(i, remainingAmountCol).Value
+    Else
+        prevRemainingAmount = 0
+    End If
+
+    ' Update the formula for Remaining Contract Amount
+    ws.Cells(i, remainingAmountCol).Formula = "=" & ws.Cells(i, contractCol).Address & "-SUM(" & ws.Cells(i, firstDateCol).Address & ":" & ws.Cells(i, lastDateCol).Address & ")"
+
+    ' Fetch the value
+    cellValue = ws.Cells(i, remainingAmountCol).Value
+
+    ' Check if the value is numeric
+    If IsNumeric(cellValue) Then
+        ' Check if the numeric value is less than zero
+        If cellValue < 0 Then
+            negativeFound = i
+            ' Apply the previous positive remaining amount to the new month's forecast
+            ws.Cells(i, lastDateCol).Value = ws.Cells(i, lastDateCol).Value + prevRemainingAmount
+            ws.Cells(i, remainingAmountCol).Value = 0
+        End If
+    End If
+
+NextIteration:
+Next i
+
+' If any negative value was found, display the error message
+If negativeFound > 0 Then
+    MsgBox "There isn't enough money left to extend the contract any further on row " & negativeFound & ". Remaining amounts have been applied.", vbExclamation, "Alert"
+End If
+
+Debug.Print "Ending UpdateRemainingContractAmount"
+
+End Sub
+
